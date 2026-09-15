@@ -1,0 +1,6 @@
+/* Configuração inicial do DeviceTree Overlay */
+/ {
+    chosen {
+        zephyr,console = &cdc_acm_uart;
+    };
+};
