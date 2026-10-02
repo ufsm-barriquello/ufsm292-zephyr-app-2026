@@ -149,10 +149,130 @@ ZTEST(gateway_memory, test_node_id_boundaries)
         zassert_equal(entry.reading.seq, 2, "wrong node 255 data");
 }
 
+ZTEST(gateway_memory, test_full_table)
+{
+        struct sensor_reading reading = { .node_id = 255, .seq = 1 };
+        struct gateway_memory_entry entry;
+
+        zassert_ok(gateway_memory_update(&memory, &reading, 100));
+        for (size_t i = 0; i < GATEWAY_MEMORY_MAX_NODES - 1; i++) {
+                reading.node_id = i;
+                zassert_ok(gateway_memory_update(&memory, &reading, 100));
+        }
+
+        reading.node_id = 200;
+        zassert_equal(gateway_memory_update(&memory, &reading, 200), -ENOSPC);
+        zassert_equal(gateway_memory_get(&memory, 200, &entry), -ENOENT);
+
+        reading.node_id = 255;
+        reading.seq = 2;
+        zassert_ok(gateway_memory_update(&memory, &reading, 300));
+        zassert_ok(gateway_memory_get(&memory, 255, &entry));
+        zassert_equal(entry.reading.seq, 2);
+        zassert_equal(entry.received_at_ms, 300);
+        for (size_t i = 0; i < GATEWAY_MEMORY_MAX_NODES - 1; i++) {
+                zassert_ok(gateway_memory_get(&memory, i, &entry));
+                zassert_equal(entry.reading.seq, 1);
+                zassert_equal(entry.received_at_ms, 100);
+        }
+
+        gateway_memory_init(&memory);
+        reading.node_id = 200;
+        zassert_ok(gateway_memory_update(&memory, &reading, 400));
+        zassert_ok(gateway_memory_get(&memory, 200, &entry));
+        zassert_equal(gateway_memory_get(&memory, 255, &entry), -ENOENT);
+}
+
+ZTEST(gateway_memory, test_request_helpers_empty)
+{
+        struct gateway_memory_entry entries[GATEWAY_MEMORY_MAX_NODES];
+        struct gateway_memory_stats stats = { .valid_nodes = 99, .online_nodes = 99 };
+
+        zassert_equal(gateway_memory_get_all(&memory, entries, 0), 0);
+        zassert_ok(gateway_memory_get_stats(&memory, 1000, 100, &stats));
+        zassert_equal(stats.valid_nodes, 0);
+        zassert_equal(stats.online_nodes, 0);
+}
+
+ZTEST(gateway_memory, test_snapshot_and_online_counts)
+{
+        struct sensor_reading reading = { .node_id = 255, .seq = 1 };
+        struct gateway_memory_entry entries[GATEWAY_MEMORY_MAX_NODES];
+        struct gateway_memory_stats stats;
+
+        zassert_ok(gateway_memory_update(&memory, &reading, 1000));
+        reading.node_id = 0;
+        zassert_ok(gateway_memory_update(&memory, &reading, 899));
+        reading.node_id = 42;
+        zassert_ok(gateway_memory_update(&memory, &reading, 900));
+        zassert_ok(gateway_memory_get_stats(&memory, 1000, 100, &stats));
+        zassert_equal(stats.valid_nodes, 3);
+        zassert_equal(stats.online_nodes, 2, "timeout boundary must be online");
+
+        /* Include stale entries, skip holes, and return copies, not aliases. */
+        memory.entries[1].valid = false;
+        memory.entries[5] = memory.entries[2];
+        memory.entries[2].valid = false;
+        zassert_equal(gateway_memory_get_all(&memory, entries, 2), 2);
+        zassert_equal(entries[0].reading.node_id, 255);
+        zassert_equal(entries[1].reading.node_id, 42);
+        zassert_equal(entries[1].received_at_ms, 900);
+        zassert_ok(gateway_memory_get_stats(&memory, 2000, 100, &stats));
+        zassert_equal(stats.valid_nodes, 2);
+        zassert_equal(stats.online_nodes, 0);
+
+        reading.seq = 2;
+        zassert_ok(gateway_memory_update(&memory, &reading, 2000));
+        zassert_equal(entries[1].reading.seq, 1, "snapshot changed after update");
+        zassert_ok(gateway_memory_get_stats(&memory, 2000, 100, &stats));
+        zassert_equal(stats.valid_nodes, 2);
+        zassert_equal(stats.online_nodes, 1, "fresh reception must restore online status");
+}
+
+ZTEST(gateway_memory, test_snapshot_capacity)
+{
+        struct sensor_reading reading = { 0 };
+        struct gateway_memory_entry entries[GATEWAY_MEMORY_MAX_NODES];
+        struct gateway_memory_stats stats;
+
+        for (size_t i = 0; i < GATEWAY_MEMORY_MAX_NODES; i++) {
+                reading.node_id = i;
+                zassert_ok(gateway_memory_update(&memory, &reading, 10));
+                entries[i].received_at_ms = 1234;
+        }
+        zassert_equal(gateway_memory_get_all(&memory, entries, GATEWAY_MEMORY_MAX_NODES - 1),
+                      -ENOSPC);
+        for (size_t i = 0; i < GATEWAY_MEMORY_MAX_NODES; i++) {
+                zassert_equal(entries[i].received_at_ms, 1234, "partial snapshot written");
+        }
+        zassert_equal(gateway_memory_get_all(&memory, entries, GATEWAY_MEMORY_MAX_NODES),
+                      GATEWAY_MEMORY_MAX_NODES);
+        for (size_t i = 0; i < GATEWAY_MEMORY_MAX_NODES; i++) {
+                zassert_equal(entries[i].reading.node_id, i);
+        }
+        zassert_ok(gateway_memory_get_stats(&memory, 10, 0, &stats));
+        zassert_equal(stats.valid_nodes, GATEWAY_MEMORY_MAX_NODES);
+        zassert_equal(stats.online_nodes, GATEWAY_MEMORY_MAX_NODES);
+}
+
+ZTEST(gateway_memory, test_online_uptime_wrap)
+{
+        struct sensor_reading reading = { .node_id = 255 };
+        struct gateway_memory_stats stats;
+
+        zassert_ok(gateway_memory_update(&memory, &reading, UINT32_MAX - 49));
+        zassert_ok(gateway_memory_get_stats(&memory, 50, 100, &stats));
+        zassert_equal(stats.online_nodes, 1);
+        zassert_ok(gateway_memory_get_stats(&memory, 51, 100, &stats));
+        zassert_equal(stats.valid_nodes, 1);
+        zassert_equal(stats.online_nodes, 0);
+}
+
 ZTEST(gateway_memory, test_null_arguments)
 {
         struct sensor_reading reading = { 0 };
         struct gateway_memory_entry entry;
+        struct gateway_memory_stats stats;
 
         zassert_equal(gateway_memory_update(NULL, &reading, 0),
                       -EINVAL, "NULL memory accepted");
@@ -163,6 +283,10 @@ ZTEST(gateway_memory, test_null_arguments)
                       -EINVAL, "NULL memory accepted");
         zassert_equal(gateway_memory_get(&memory, 0, NULL),
                       -EINVAL, "NULL entry accepted");
+        zassert_equal(gateway_memory_get_all(NULL, &entry, 1), -EINVAL);
+        zassert_equal(gateway_memory_get_all(&memory, NULL, 1), -EINVAL);
+        zassert_equal(gateway_memory_get_stats(NULL, 0, 100, &stats), -EINVAL);
+        zassert_equal(gateway_memory_get_stats(&memory, 0, 100, NULL), -EINVAL);
 }
 
 ZTEST_SUITE(gateway_memory, NULL,

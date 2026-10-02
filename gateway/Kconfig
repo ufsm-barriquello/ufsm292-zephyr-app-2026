@@ -13,3 +13,11 @@ endmenu
 module = GATEWAY
 module-str = GATEWAY
 source "subsys/logging/Kconfig.template.log_config"
+
+config GATEWAY_NODE_ONLINE_TIMEOUT_MS
+	int "Maximum reception age for an online sensor node (ms)"
+	default 30000
+	range 1 2147483647
+	help
+	  Nodes count as online while the age of their last gateway reception
+	  is at most this timeout. Adjust for the sensor reporting interval.

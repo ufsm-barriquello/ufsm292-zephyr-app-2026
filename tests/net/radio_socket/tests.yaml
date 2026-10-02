@@ -1,0 +1,7 @@
+tests:
+  gateway.radio_socket:
+    platform_allow:
+      - native_sim/native/64
+    tags:
+      - net
+      - radio
