@@ -211,7 +211,7 @@ ZTEST(gateway_memory, test_snapshot_and_online_counts)
 
         /* Include stale entries, skip holes, and return copies, not aliases. */
         memory.entries[1].valid = false;
-        memory.entries[5] = memory.entries[2];
+        memory.entries[GATEWAY_MEMORY_MAX_NODES - 1] = memory.entries[2];
         memory.entries[2].valid = false;
         zassert_equal(gateway_memory_get_all(&memory, entries, 2), 2);
         zassert_equal(entries[0].reading.node_id, 255);

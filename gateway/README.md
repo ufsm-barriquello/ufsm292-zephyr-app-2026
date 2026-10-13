@@ -57,75 +57,128 @@ checks codec TX bytes at the driver boundary, RX round-trip, interface isolation
 on the same fd. A separate synthetic fragmented RX case bypasses IEEE802154 L2
 (which requires contiguous RX frames) to check socket copying independently.
 
-Validated against Zephyr 4.4.99, commit `c605ea46e15f`. The SAM R21 image builds,
-but radio startup, promiscuous reception, FCS removal and actual TX/RX still need
-hardware validation. Ethernet/IP operation is not validated by these tests.
+Validated against Zephyr 4.4.99, commit `c605ea46e15f`. The gateway explicitly
+disables promiscuous reception and requires successful PAN filtering before
+starting RX. Radio delivery with filtering enabled still needs hardware validation.
+Ethernet/IP operation is not validated by these tests.
+
+The RF2xx driver in that Zephyr revision lacks an upper bound on received PHY
+lengths. A captured gateway fault had a 157-byte PHY length; the driver copied
+162 bytes into its 132-byte local buffer and corrupted the radio thread's return
+address. Disabling promiscuous mode reduces exposure but cannot replace bounds
+checking before the driver reads the frame.
+
+`gateway/patches/rf2xx-rx-length.patch` preserves the driver fix applied to the
+workspace Zephyr checkout. After restoring that revision with `west update`,
+apply it before building:
+
+```sh
+patch -d "$(west list zephyr -f '{abspath}')" -p1 \
+  < gateway/patches/rf2xx-rx-length.patch
+```
+
+The patch rejects PHY lengths greater than 127 before the SPI frame read, in
+both filtered and promiscuous modes. The existing filtered minimum-length check
+is retained. It adds no RAM or stack allocation.
 
 ## Application threads
 
-`gateway_id` configures the radio/socket and logs statistics every five seconds.
-It starts automatically with a 1024-byte stack at priority 0. `radio_rx_id`
-uses a 2048-byte stack at priority 5 and waits on `rx_ready` until setup succeeds.
-`main()` returns immediately, leaving room to start other services such as an
-HTTP server. The main stack remains available for Zephyr initialization; the
-dedicated gateway thread adds its own stack and thread bookkeeping.
+`main()` configures the radio/socket, then runs the blocking HTTP loop on its
+existing 2048-byte stack. Radio setup failure does not prevent HTTP startup.
+`radio_rx_id` uses a 2048-byte stack at priority 5 and waits on `rx_ready`
+until radio setup succeeds. There is no separate gateway or HTTP thread.
 
-Ethernet setup (`eth_setup()`) runs inline in the gateway thread: DHCP start
-plus a net-mgmt callback for carrier on/off and IPv4 address events. The
-5 s stats loop also logs carrier/admin status every other tick (10 s) when
-an Ethernet interface exists; carrier/IP changes still arrive via events.
+Ethernet setup (`eth_setup()`) runs at application initialization: DHCP start
+plus a net-mgmt callback for carrier on/off and IPv4 address events.
+Bounded delayed work logs gateway statistics every five seconds and Ethernet
+carrier/admin status and current IPv4 address every ten seconds (`ip=none`
+when no preferred address exists); network I/O never runs on the system
+workqueue. TCP retains its own Zephyr workqueue.
 
-The RX loop shows the application flow: receive a complete frame, decode a
-`sensor_reading`, then call `handle_sensor_reading()`. That handler currently
-updates the memory table and prints the reading, and is the place to add
-application processing. It runs synchronously in the RX thread: keep work
-bounded so reception can continue.
-The reading belongs to the loop's stack and is reused on the next decode; copy
-it into a message queue or mutex-protected shared state for an HTTP server or
-other thread rather than retaining its pointer. Memory table access from other
-threads requires synchronization. HTTP service setup
-is not implemented by this example.
+The RX loop receives a complete frame, decodes a `sensor_reading`, then calls
+`handle_sensor_reading()`. That handler updates the table under
+`gateway_memory_lock`, then prints outside the lock. The HTTP accessors copy
+state under the same lock, releasing it before JSON encoding or network I/O.
+Keep application processing bounded so reception can continue.
 
 ## RAM budget
 
-The memory table holds the latest reading for up to 16 distinct nodes, using
-512 bytes on SAM R21. Slots are searched by node ID, so IDs 0 through 255
-remain valid. A new node is rejected with `-ENOSPC` when all slots are occupied;
-existing nodes can still update. The RX handler logs failed updates and still
-prints each received reading to the console. Entries remain until table reset.
+The memory table holds the latest reading for up to four distinct nodes,
+using 128 bytes on SAM R21. Slots are searched by node ID, so IDs 0 through
+255 remain valid. A new node is rejected with `-ENOSPC` when all slots are
+occupied; existing nodes can still update. Stale entries retain their slots
+until reboot or explicit table reset.
 
-The shared network data pools explicitly use eight RX and eight TX buffers,
-each with 128 bytes of payload capacity. Packet descriptor counts remain eight
-RX and two TX. Compared with the 256-entry table and sixteen buffers per data
-pool, these settings save 10176 bytes on the current SAM R21 build. Ethernet and
-HTTP traffic share these finite pools: validate concurrent radio traffic and
-HTTP requests before treating these counts as final.
+The HTTP loop uses a shared 515-byte JSON response buffer and a 128-byte input
+chunk. Sensor encoding uses a 128-byte whole-table snapshot on main's stack.
+There is no application heap allocation. Shared network pools use eight RX
+and eight TX buffers with 256-byte payloads; packet counts are eight RX and
+two TX. Preserve sufficient fragments for full Ethernet frames.
 
-Further trims: the Ethernet monitor thread is folded into the gateway loop,
-net-mgmt events run on the system workqueue (`CONFIG_NET_MGMT_EVENT_SYSTEM_WORKQUEUE`),
-`ISR_STACK_SIZE=1024`, `MAIN_STACK_SIZE=512` (`main()` returns immediately),
-`NET_IPV4_MAX_ROUTES=2`, `NET_MAX_CONTEXTS=3` (radio socket + DHCP + one HTTP
-listener), `LOG_BUFFER_SIZE=512`. Measured SAM R21: RAM 23460/32768 (71.6%).
-`NET_MAX_CONTEXTS=3` and two routes are floors for the planned HTTP listener;
-raising either re-grows `contexts`/`route_ipv4_entries` linearly.
+`NET_MAX_CONTEXTS=3` covers the radio socket, HTTP listener and one accepted
+connection. Zephyr DHCPv4 uses packets directly, not a socket/context.
+`MAIN_STACK_SIZE=2048`, `ISR_STACK_SIZE=1024`, `NET_IPV4_MAX_ROUTES=2`,
+`LOG_BUFFER_SIZE=512`. The HTTP-enabled SAM R21 build uses 31740/32768 bytes
+of RAM (96.86%) and 126772/262144 bytes of flash (48.36%).
+Hardware stack high-water marks and concurrent Ethernet/radio traffic still
+need validation; the remaining 1028 bytes are not justification for adding
+another thread or client.
 
-The planned HTTP API is:
+## HTTP API
 
-- `GET /sensors`: latest reading for every stored node, encoded as JSON.
-- `GET /health`: status, uptime, and online node count.
-- `POST /reset`: restart the gateway for recovery.
+`gateway/src/http_server.c` runs one client at a time on main, using Zephyr's
+incremental HTTP parser. The listener binds all IPv4 addresses on
+`CONFIG_GATEWAY_HTTP_PORT` (default 80); it can bind before DHCP supplies an
+address. Each response includes `Content-Length`, `application/json`, and
+`Connection: close`. Keep-alive and pipelining are not supported.
 
-Budget a bounded JSON output buffer and emit the sensor list incrementally,
-rather than reserving a full-response buffer. Copy readings under a lock, then
-release it before network I/O. If a consistent whole-table snapshot is needed,
-budget another 512 bytes for that snapshot. Define an age threshold for online
-nodes separately from table occupancy. HTTP, TCP, Ethernet, synchronized table
-reads, and these endpoints still need integration and a separate RAM check.
+- `GET /sensors`: 200 with a JSON array of all stored readings, including stale
+  entries. Fields: `node_id`, `light`, `temp_c`, `accel`, `last_seen_ms`.
+  Temperature is Celsius; `last_seen_ms` is gateway uptime at reception.
+- `GET /health`: 200 with `status`, 64-bit `uptime_ms`, and `online_nodes`.
+  `status` is `ok` after radio startup succeeds, otherwise `degraded`; it is
+  not a promise of Ethernet health or continued radio delivery. Online age
+  uses `CONFIG_GATEWAY_NODE_ONLINE_TIMEOUT_MS`, default 30000 ms.
+- `POST /reset`: 202 with `{"status":"restarting"}`. After successful response
+  queuing, delayed work requests a cold reboot after 100 ms. This is not
+  proof of client receipt or TCP acknowledgment. An incomplete or malformed
+  request does not trigger a reboot. Reboot discards the RAM table.
+
+Other methods on a known route return 405 with `Allow`; unknown exact paths
+return 404. Query strings are not matched. Malformed requests return 400;
+requests exceeding 2048 bytes return 413. Paths must fit 31 bytes.
+Each request has a ten-second reception deadline and sends use a five-second
+timeout. One slow client can occupy the only HTTP slot, but cannot block radio RX.
+Request bodies are parsed and discarded; these routes need no body.
+
+`CONFIG_NET_CONTEXT_SNDTIMEO=y` is required for `SO_SNDTIMEO` on Zephyr's
+native sockets. Without it, timeout setup fails with `ENOPROTOOPT` and the
+handler closes the connection before reading the request (curl reports
+`Empty reply from server`). Host-offloaded sockets do not expose this
+configuration dependency. A native TCP loopback smoke reproduced the failure,
+then verified timeout setup and a complete `/sensors` 200 response after enabling it.
+
+There is no TLS or authentication. Anyone with access to the listener can
+read sensor data or reboot the gateway. Use only on a trusted network.
+
+```sh
+curl -i http://GATEWAY_IP/sensors
+curl -i http://GATEWAY_IP/health
+curl -i -X POST http://GATEWAY_IP/reset
+```
+
+Hardware-free smoke validation used native_sim host-offloaded sockets on port
+8080 with the real HTTP loop, encoder, memory helpers and gateway state
+accessors. Curl verified both GET responses, wrong-method 405s, unknown-path
+404, stale-node health, and reset's 202 response followed by the simulator's
+`sys_arch_reboot` exit. Fragmented requests, malformed input, oversized reset
+requests and ignoring a pipelined reset were also exercised. This does not
+validate the SAM R21 Ethernet driver, native TCP stack, or physical reboot.
 
 ## Request data helpers
 
 `gateway_memory_get_all()` copies valid entries into a caller-owned array and
-returns the entry count. Allocate `GATEWAY_MEMORY_MAX_NODES` entries (512 bytes
+returns the entry count. Allocate `GATEWAY_MEMORY_MAX_NODES` entries (128 bytes
 on SAM R21) for a complete snapshot. A smaller array returns `-ENOSPC` without
 writing a partial result. Entries are in slot order, not sorted by node ID;
 stale readings remain in the snapshot for `/sensors`.

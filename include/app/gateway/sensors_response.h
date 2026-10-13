@@ -12,7 +12,7 @@
 /*
  * Encode the Gateway's current sensor readings into a caller-owned buffer.
  * Returns the JSON byte count excluding NUL, or a negative errno.
- * Use GATEWAY_SENSORS_JSON_MAX_SIZE for a complete 16-node response.
+ * Use GATEWAY_SENSORS_JSON_MAX_SIZE for a complete four-node response.
  */
 int gateway_sensors_json_response(char *output, size_t capacity);
 

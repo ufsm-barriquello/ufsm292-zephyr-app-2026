@@ -21,3 +21,8 @@ config GATEWAY_NODE_ONLINE_TIMEOUT_MS
 	help
 	  Nodes count as online while the age of their last gateway reception
 	  is at most this timeout. Adjust for the sensor reporting interval.
+
+config GATEWAY_HTTP_PORT
+	int "Gateway HTTP listen port"
+	default 80
+	range 1 65535

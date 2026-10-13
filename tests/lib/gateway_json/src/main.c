@@ -125,8 +125,8 @@ ZTEST(gateway_json, test_full_table_fits_maximum_response_buffer)
 	};
 	int length;
 
-	for (uint8_t node_id = 0; node_id < GATEWAY_MEMORY_MAX_NODES; node_id++) {
-		reading.node_id = node_id;
+	for (size_t i = 0; i < GATEWAY_MEMORY_MAX_NODES; i++) {
+		reading.node_id = (i == 0U) ? 0U : (uint8_t)(UINT8_MAX - i + 1U);
 		zassert_ok(gateway_memory_update(&memory, &reading, UINT32_MAX));
 	}
 

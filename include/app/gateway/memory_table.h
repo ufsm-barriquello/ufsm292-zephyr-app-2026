@@ -12,7 +12,7 @@
 #include <app/lib/sensor_frame.h>
 
 /* Number of stored nodes, not a limit on the uint8_t node ID range. */
-#define GATEWAY_MEMORY_MAX_NODES 16
+#define GATEWAY_MEMORY_MAX_NODES 4
 
 struct gateway_memory_entry {
         bool valid;

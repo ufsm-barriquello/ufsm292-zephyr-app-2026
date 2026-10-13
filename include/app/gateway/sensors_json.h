@@ -11,8 +11,8 @@
 
 #include <app/gateway/memory_table.h>
 
-/* Includes the NUL terminator; fits every entry in a full 16-node table. */
-#define GATEWAY_SENSORS_JSON_MAX_SIZE 2048U
+/* Includes the NUL terminator; conservative bound for every 4-node response. */
+#define GATEWAY_SENSORS_JSON_MAX_SIZE (3U + 128U * GATEWAY_MEMORY_MAX_NODES)
 
 /*
  * Encode a consistent snapshot of the table as a JSON array. The caller

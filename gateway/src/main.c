@@ -30,6 +30,12 @@
 #include <app/gateway/memory_table.h>
 #include <app/gateway/sensors_json.h>
 #include <app/gateway/sensors_response.h>
+#include <errno.h>
+#include <inttypes.h>
+
+#include <zephyr/sys/printk.h>
+
+#include "http_server.h"
 
 #include <zephyr/app_version.h>
 
@@ -46,6 +52,7 @@ static atomic_t rx_ok;
 static atomic_t rx_other;
 static struct radio_socket radio_sock = { .fd = -1 };
 static K_SEM_DEFINE(rx_ready, 0, 1);
+static atomic_t radio_ready;
 
 /* Ethernet link monitor: logs carrier up/down and current IPv4 address. */
 static void eth_event_handler(struct net_mgmt_event_callback *cb,
@@ -117,6 +124,38 @@ int gateway_sensors_json_response(char *output, size_t capacity)
 					   output, capacity);
 }
 
+int gateway_health_json_response(char *output, size_t capacity)
+{
+	struct gateway_memory_stats stats;
+	bool ready;
+	int written;
+
+	if (output == NULL) {
+		return -EINVAL;
+	}
+	if (capacity == 0U) {
+		return -ENOSPC;
+	}
+
+	k_mutex_lock(&gateway_memory_lock, K_FOREVER);
+	gateway_memory_get_stats(&gateway_memory, k_uptime_get_32(),
+				 CONFIG_GATEWAY_NODE_ONLINE_TIMEOUT_MS, &stats);
+	k_mutex_unlock(&gateway_memory_lock);
+	ready = atomic_get(&radio_ready) != 0;
+
+	written = snprintk(output, capacity,
+			   "{\"status\":\"%s\",\"uptime_ms\":%" PRIu64
+			   ",\"online_nodes\":%u}",
+			   ready ? "ok" : "degraded",
+			   (uint64_t)k_uptime_get(),
+			   (unsigned int)stats.online_nodes);
+	if (written < 0 || (size_t)written >= capacity) {
+		output[0] = '\0';
+		return -ENOSPC;
+	}
+	return written;
+}
+
 /* Runs in the RX thread; console output uses a copy outside the table lock. */
 static void handle_sensor_reading(const struct sensor_reading *r)
 {
@@ -177,18 +216,14 @@ static void receive_frames(void *p1, void *p2, void *p3)
 
 K_THREAD_DEFINE(radio_rx_id, 2048, receive_frames, NULL, NULL, NULL, 5, 0, 0);
 
-static void gateway_run(void *p1, void *p2, void *p3)
+static void gateway_run(void)
 {
 	const struct ieee802154_radio_api *api;
 	struct net_if *iface;
 	uint16_t channel = GW_CHANNEL;
 	int ret;
 
-	ARG_UNUSED(p1);
-	ARG_UNUSED(p2);
-	ARG_UNUSED(p3);
-
-	printk("Gateway %s (samr21_xpro, ch %d, pan 0x%04x, promiscuous)\n",
+	printk("Gateway %s (samr21_xpro, ch %d, pan 0x%04x)\n",
 	       APP_VERSION_STRING, GW_CHANNEL, GW_PAN_ID);
 
 	if (!device_is_ready(radio)) {
@@ -211,27 +246,27 @@ static void gateway_run(void *p1, void *p2, void *p3)
 		return;
 	}
 
-	/* Our PAN ID, in the hardware filter. Promiscuous mode below accepts
-	 * everything regardless for now; the ID is set so the filter is ready
-	 * when we stop being promiscuous.
-	 */
+	/* Accept only our PAN and matching unicast/broadcast destinations. */
 	{
 		struct ieee802154_filter f = { .pan_id = GW_PAN_ID };
 
 		ret = api->filter(radio, true, IEEE802154_FILTER_TYPE_PAN_ID, &f);
 		if (ret < 0) {
-			LOG_WRN("PAN ID filter refused (%d), continuing", ret);
+			LOG_ERR("PAN ID filter refused (%d)", ret);
+			radio_socket_close(&radio_sock);
+			return;
 		}
 	}
 
-	/* Promiscuous for now: accept any on-channel frame. */
+	/* Explicitly restore hardware filtering before starting reception. */
 	{
-		struct ieee802154_config cfg = { .promiscuous = true };
+		struct ieee802154_config cfg = { .promiscuous = false };
 
 		ret = api->configure(radio, IEEE802154_CONFIG_PROMISCUOUS, &cfg);
 		if (ret < 0) {
-			LOG_WRN("Promiscuous mode refused (%d), using default filter",
-				ret);
+			LOG_ERR("Disabling promiscuous mode failed (%d)", ret);
+			radio_socket_close(&radio_sock);
+			return;
 		}
 	}
 
@@ -241,39 +276,52 @@ static void gateway_run(void *p1, void *p2, void *p3)
 		radio_socket_close(&radio_sock);
 		return;
 	}
+	atomic_set(&radio_ready, 1);
 	k_sem_give(&rx_ready);
 
-	LOG_INF("Listening promiscuous on ch %d, PAN ID 0x%04x set", GW_CHANNEL, GW_PAN_ID);
-
-	unsigned int ticks = 0;
-
-	while (1) {
-		struct gateway_memory_stats stats;
-
-		k_sleep(K_MSEC(5000));
-		ticks++;
-		k_mutex_lock(&gateway_memory_lock, K_FOREVER);
-		gateway_memory_get_stats(&gateway_memory, k_uptime_get_32(),
-					 CONFIG_GATEWAY_NODE_ONLINE_TIMEOUT_MS, &stats);
-		k_mutex_unlock(&gateway_memory_lock);
-
-		LOG_INF("gw ok=%u other=%u stored=%u active=%u",
-			(unsigned int)atomic_get(&rx_ok),
-			(unsigned int)atomic_get(&rx_other),
-			(unsigned int)stats.valid_nodes, (unsigned int)stats.online_nodes);
-		if (eth_iface != NULL && (ticks % 2) == 0) {
-			LOG_INF("eth: carrier=%s admin=%s",
-				net_if_is_carrier_ok(eth_iface) ? "ok" : "down",
-				net_if_is_admin_up(eth_iface) ? "up" : "down");
-		}
-	}
+	LOG_INF("Listening on ch %d, PAN ID 0x%04x, promiscuous off", GW_CHANNEL, GW_PAN_ID);
 
 }
 
-K_THREAD_DEFINE(gateway_id, 1024, gateway_run, NULL, NULL, NULL, 0, 0, 0);
+static void gateway_stats(struct k_work *work)
+{
+	static unsigned int ticks;
+	struct gateway_memory_stats stats;
+
+	ticks++;
+	k_mutex_lock(&gateway_memory_lock, K_FOREVER);
+	gateway_memory_get_stats(&gateway_memory, k_uptime_get_32(),
+				 CONFIG_GATEWAY_NODE_ONLINE_TIMEOUT_MS, &stats);
+	k_mutex_unlock(&gateway_memory_lock);
+	LOG_INF("gw ok=%u other=%u stored=%u active=%u",
+		(unsigned int)atomic_get(&rx_ok), (unsigned int)atomic_get(&rx_other),
+		(unsigned int)stats.valid_nodes, (unsigned int)stats.online_nodes);
+	if (eth_iface != NULL && (ticks % 2) == 0) {
+		char addr[NET_IPV4_ADDR_LEN];
+		struct net_in_addr *ip = net_if_ipv4_get_global_addr(eth_iface,
+								 NET_ADDR_PREFERRED);
+		const char *ip_text = "none";
+
+		if (ip != NULL && net_addr_ntop(AF_INET, ip, addr, sizeof(addr)) != NULL) {
+			ip_text = addr;
+		}
+		LOG_INF("eth: carrier=%s admin=%s ip=%s",
+			net_if_is_carrier_ok(eth_iface) ? "ok" : "down",
+			net_if_is_admin_up(eth_iface) ? "up" : "down", ip_text);
+	}
+	k_work_schedule(k_work_delayable_from_work(work), K_SECONDS(5));
+}
+
+static K_WORK_DELAYABLE_DEFINE(stats_work, gateway_stats);
 
 int main(void)
 {
-	/* Gateway threads start automatically; other services can start here. */
-	return 0;
+	int ret;
+
+	gateway_run();
+	k_work_schedule(&stats_work, K_SECONDS(5));
+	/* Radio setup failure still leaves health and recovery available over HTTP. */
+	ret = gateway_http_run();
+	LOG_ERR("HTTP server stopped (%d)", ret);
+	return ret;
 }

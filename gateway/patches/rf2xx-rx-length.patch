@@ -1,0 +1,15 @@
+--- a/drivers/ieee802154/ieee802154_rf2xx.c
++++ b/drivers/ieee802154/ieee802154_rf2xx.c
+@@ -179,8 +179,10 @@
+ 		pkt_len = rx_buf[RX2XX_FRAME_PHR_INDEX];
+ 	}
+ 
+-	if (!ctx->promiscuous && pkt_len < RX2XX_FRAME_MIN_PHR_SIZE) {
+-		LOG_ERR("Invalid RX frame length");
++	/* Even promiscuous reception must fit the PHY and local frame buffer. */
++	if (pkt_len > RF2XX_MAX_PSDU_LENGTH ||
++	    (!ctx->promiscuous && pkt_len < RX2XX_FRAME_MIN_PHR_SIZE)) {
++		LOG_ERR("Invalid RX frame length %u", pkt_len);
+ 		return;
+ 	}
+ 

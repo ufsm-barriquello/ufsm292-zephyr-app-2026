@@ -24,7 +24,6 @@ else()
 
   target_sources(app PRIVATE
     src/main.c
-    ${MEMORY_DIR}/memory_table.c
   )
 
   target_include_directories(app PRIVATE ${INC_DIR})
