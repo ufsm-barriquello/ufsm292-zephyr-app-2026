@@ -66,9 +66,10 @@ hardware validation. Ethernet/IP operation is not validated by these tests.
 `gateway_id` configures the radio/socket and logs statistics every five seconds.
 It starts automatically with a 1024-byte stack at priority 0. `radio_rx_id`
 uses a 2048-byte stack at priority 5 and waits on `rx_ready` until setup succeeds.
-`main()` returns immediately, leaving room to start other services such as an
-HTTP server. The main stack remains available for Zephyr initialization; the
-dedicated gateway thread adds its own stack and thread bookkeeping.
+`main()` starts the HTTP server through `gateway_http_server_start()` in
+`gateway/src/http_server.c`. The main stack remains available for Zephyr
+initialization; the dedicated gateway thread adds its own stack and thread
+bookkeeping.
 
 Ethernet setup (`eth_setup()`) runs inline in the gateway thread: DHCP start
 plus a net-mgmt callback for carrier on/off and IPv4 address events. The
@@ -81,10 +82,9 @@ updates the memory table and prints the reading, and is the place to add
 application processing. It runs synchronously in the RX thread: keep work
 bounded so reception can continue.
 The reading belongs to the loop's stack and is reused on the next decode; copy
-it into a message queue or mutex-protected shared state for an HTTP server or
-other thread rather than retaining its pointer. Memory table access from other
-threads requires synchronization. HTTP service setup
-is not implemented by this example.
+it into a message queue or mutex-protected shared state for another thread
+rather than retaining its pointer. Memory table access from other threads
+requires synchronization.
 
 ## RAM budget
 
@@ -103,24 +103,29 @@ HTTP requests before treating these counts as final.
 
 Further trims: the Ethernet monitor thread is folded into the gateway loop,
 net-mgmt events run on the system workqueue (`CONFIG_NET_MGMT_EVENT_SYSTEM_WORKQUEUE`),
-`ISR_STACK_SIZE=1024`, `MAIN_STACK_SIZE=512` (`main()` returns immediately),
+`ISR_STACK_SIZE=1024`, `MAIN_STACK_SIZE=2048`,
 `NET_IPV4_MAX_ROUTES=2`, `NET_MAX_CONTEXTS=3` (radio socket + DHCP + one HTTP
-listener), `LOG_BUFFER_SIZE=512`. Measured SAM R21: RAM 23460/32768 (71.6%).
-`NET_MAX_CONTEXTS=3` and two routes are floors for the planned HTTP listener;
-raising either re-grows `contexts`/`route_ipv4_entries` linearly.
+listener), `LOG_BUFFER_SIZE=512`. The earlier SAM R21 measurement of
+23460/32768 bytes predates HTTP/TCP. With the HTTP server enabled, the current
+image fails at link time because RAM is exceeded by 3884 bytes. The configured
+buffer and stack sizes are being preserved for this stage; RAM tuning and a
+successful target build remain pending.
+`NET_MAX_CONTEXTS=3` and two routes include the HTTP listener; raising either
+re-grows `contexts`/`route_ipv4_entries` linearly.
 
-The planned HTTP API is:
+The HTTP/1 server listens on TCP port 80 and registers:
 
-- `GET /sensors`: latest reading for every stored node, encoded as JSON.
-- `GET /health`: status, uptime, and online node count.
-- `POST /reset`: restart the gateway for recovery.
+- `GET /sensors`: returns `200 OK` with a JSON array of the latest readings for
+  up to 16 nodes. Each object contains `node_id`, `light`, `temp_c`, `accel`,
+  and `last_seen_ms`; an empty table returns `[]`. Encoding failures return
+  `500 Internal Server Error` with a JSON error object.
+- `GET /health`: status, uptime, and online node count in plain text.
+- `POST /reset`: schedules a gateway restart after returning `202 Accepted`.
 
-Budget a bounded JSON output buffer and emit the sensor list incrementally,
-rather than reserving a full-response buffer. Copy readings under a lock, then
-release it before network I/O. If a consistent whole-table snapshot is needed,
-budget another 512 bytes for that snapshot. Define an age threshold for online
-nodes separately from table occupancy. HTTP, TCP, Ethernet, synchronized table
-reads, and these endpoints still need integration and a separate RAM check.
+Ethernet/IP setup remains to be validated on hardware. The `/sensors` handler
+copies a consistent snapshot, releases the memory lock, and streams the JSON
+response in bounded 128-byte chunks. The online timeout remains independently
+configurable from table occupancy.
 
 ## Request data helpers
 

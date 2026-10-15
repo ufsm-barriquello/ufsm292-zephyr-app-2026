@@ -25,6 +25,8 @@
 #include <zephyr/net/dhcpv4.h>
 #include <zephyr/sys/atomic.h>
 #include "radio_socket.h"
+#include "gateway_state.h"
+#include "http_server.h"
 
 #include <app/lib/sensor_frame.h>
 #include <app/gateway/memory_table.h>
@@ -115,6 +117,29 @@ int gateway_sensors_json_response(char *output, size_t capacity)
 {
 	return gateway_sensors_json_encode(&gateway_memory, &gateway_memory_lock,
 					   output, capacity);
+}
+
+/* Fornece ao handler HTTP um snapshot da tabela protegida pelo mutex global. */
+int gateway_sensors_json_stream_start(struct gateway_sensors_json_stream *stream)
+{
+	return gateway_sensors_json_stream_init(&gateway_memory, &gateway_memory_lock,
+						stream);
+}
+
+int gateway_get_health_stats(struct gateway_memory_stats *stats)
+{
+	int ret;
+
+	if (stats == NULL) {
+		return -EINVAL;
+	}
+
+	k_mutex_lock(&gateway_memory_lock, K_FOREVER);
+	ret = gateway_memory_get_stats(&gateway_memory, k_uptime_get_32(),
+				       CONFIG_GATEWAY_NODE_ONLINE_TIMEOUT_MS, stats);
+	k_mutex_unlock(&gateway_memory_lock);
+
+	return ret;
 }
 
 /* Runs in the RX thread; console output uses a copy outside the table lock. */
@@ -274,6 +299,11 @@ K_THREAD_DEFINE(gateway_id, 1024, gateway_run, NULL, NULL, NULL, 0, 0, 0);
 
 int main(void)
 {
-	/* Gateway threads start automatically; other services can start here. */
+	int ret = gateway_http_server_start();
+
+	if (ret < 0) {
+		return ret;
+	}
+
 	return 0;
 }

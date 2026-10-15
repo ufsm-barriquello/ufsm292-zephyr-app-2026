@@ -123,6 +123,11 @@ ZTEST(gateway_json, test_full_table_fits_maximum_response_buffer)
 		.temp_c_x100 = INT16_MIN,
 		.accel = { INT16_MIN, INT16_MAX, INT16_MIN },
 	};
+	struct gateway_sensors_json_stream stream;
+	char streamed_output[GATEWAY_SENSORS_JSON_MAX_SIZE];
+	char chunk[GATEWAY_SENSORS_JSON_CHUNK_SIZE];
+	size_t streamed_len = 0;
+	bool final_chunk;
 	int length;
 
 	for (uint8_t node_id = 0; node_id < GATEWAY_MEMORY_MAX_NODES; node_id++) {
@@ -138,6 +143,23 @@ ZTEST(gateway_json, test_full_table_fits_maximum_response_buffer)
 	zassert_equal(output[0], '[');
 	zassert_equal(output[length - 1], ']');
 	zassert_equal(output[length], '\0');
+
+	/* A transmissão em blocos deve reconstruir o mesmo JSON completo. */
+	zassert_ok(gateway_sensors_json_stream_init(&memory, &memory_lock, &stream));
+	do {
+		int chunk_len = gateway_sensors_json_encode_next(&stream, chunk,
+								 sizeof(chunk),
+								 &final_chunk);
+
+		zassert_true(chunk_len > 0, "stream encoder returned an empty chunk");
+		zassert_true(streamed_len + (size_t)chunk_len < sizeof(streamed_output),
+			     "streamed response exceeded its buffer");
+		memcpy(streamed_output + streamed_len, chunk, (size_t)chunk_len);
+		streamed_len += (size_t)chunk_len;
+	} while (!final_chunk);
+	streamed_output[streamed_len] = '\0';
+	zassert_equal(streamed_len, (size_t)length);
+	zassert_mem_equal(streamed_output, output, (size_t)length);
 }
 
 ZTEST(gateway_json, test_invalid_arguments)
