@@ -2,7 +2,7 @@
 
 ## Recebendo pacotes do sensor
 
-O gateway usa um socket `AF_PACKET` /`SOCK_RAW`, not global `IEEE802154_RAW_MODE`.
+O gateway usa um socket `AF_PACKET` /`SOCK_RAW`.
 
 Recebe frames MAC sem FCS:
 
@@ -33,16 +33,8 @@ set -o pipefail
 build-radio-socket-test/zephyr/zephyr.exe 2>&1 | tee /tmp/ufsm292_socket_local_01.log
 ```
 
-Durante testagem foi detectada uma falha no driver RF2xx do zephyr que pode ser
-suprimida usando `gateway/patches/rf2xx-rx-length.patch` em zephyr 4.4
 
-```sh
-patch -d "$(west list zephyr -f '{abspath}')" -p1 \
-  < gateway/patches/rf2xx-rx-length.patch
-```
-
-
-## Application threads
+## Threads do gateway
 
 `main()` configura o radio/socket, depois inicia o loop do HTTP. 
 Falhas no setup do rádio não bloqueiam o inicio do HTTP.
@@ -61,14 +53,6 @@ Teste no simulador os mecanismos de recuperação de falha do ethernet.
 python3 tests/drivers/ethernet/ksz8851snl/run.py
 ```
 
-
-
-The RX loop receives a complete frame, decodes a `sensor_reading`, then calls
-`handle_sensor_reading()`. That handler updates the table under
-`gateway_memory_lock`, then prints outside the lock. The HTTP accessors copy
-state under the same lock, releasing it before JSON encoding or network I/O.
-Keep application processing bounded so reception can continue.
-
 O loop RX recebe um frame, decodifica `sensor_reading`, e chama
 `handle_sensor_reading()`. Esse handler atualize a tabela usando
 `gateway_memory_lock`, e depois imprime para o serial. Os endpoints HTTP copiam
@@ -77,12 +61,6 @@ Isso permite que o gateway continue recebendo durante a transmissão HTTP.
 
 
 ## RAM
-
-The memory table holds the latest reading for up to four distinct nodes,
-using 128 bytes on SAM R21. Slots are searched by node ID, so IDs 0 through
-255 remain valid. A new node is rejected with `-ENOSPC` when all slots are
-occupied; existing nodes can still update. Stale entries retain their slots
-until reboot or explicit table reset.
 
 A tabela de memória segura as ultimas leituras para até quatro nós com IDs
 distintos, usando 128 bytes para cada nó. Se a tabela já está cheia rejeita
@@ -98,7 +76,7 @@ HTTP 500 (sobrecarregado).
 O projeto usa 32244/32768 bytes de RAM (98.40%) e 127280/262144 bytes de flash (48.55%).
 
 
-## HTTP API
+## API HTTP
 
 `gateway/src/http_server.c` serve um cliente de cada vez usando o parser HTTP do 
 Zephyr. Ele escuta em `CONFIG_GATEWAY_HTTP_PORT` (= 80) e responde com `Content-Length`, 
