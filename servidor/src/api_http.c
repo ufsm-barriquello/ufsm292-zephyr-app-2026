@@ -227,3 +227,4 @@ void api_http_iniciar(void)
 			servidor_http, NULL, NULL, NULL, PRIORIDADE, 0, K_NO_WAIT);
 	k_thread_name_set(&thread_http, "http");
 }
+
