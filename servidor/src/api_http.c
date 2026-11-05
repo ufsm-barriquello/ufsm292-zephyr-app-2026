@@ -6,6 +6,7 @@
 
 #include "api_http.h"
 #include "armazenamento.h"
+#include <zephyr/fs/fs.h>
 #include "tabela.h"
 
 #include <zephyr/kernel.h>
@@ -129,6 +130,175 @@ static int get_data(int sock)
 	return 200;
 }
 
+
+/* Extrai "node" e "n" de "GET /log?node=1&n=5 HTTP/1.1". */
+static bool parse_log_query(int *node, int *n)
+{
+const char *p = strstr(req, "node=");
+const char *q;
+
+*node = -1;
+*n = 3; /* padrão: últimas 3 linhas */
+
+if (p != NULL) {
+*node = (int)strtol(p + 5, NULL, 10);
+}
+q = strstr(req, "n=");
+if (q != NULL) {
+int v = (int)strtol(q + 2, NULL, 10);
+
+if (v > 0 && v <= 4) {
+*n = v; /* limita a 4: corpo[512] não comporta mais */
+}
+}
+return *node >= 0;
+}
+
+/* Lê o CSV em streaming e devolve as últimas N linhas do nó pedido. */
+static int get_log(int sock)
+{
+int node;
+int n;
+struct fs_file_t arq;
+char linha[128];
+size_t usado = 0;
+int total = 0;
+int escritas;
+int faltam;
+size_t pos = 0;
+int ret;
+
+if (!parse_log_query(&node, &n)) {
+responder(sock, 400, "Bad Request",
+  "{\"erro\":\"use ?node=X&n=N\"}");
+return 400;
+}
+
+if (!armazenamento_ok()) {
+responder(sock, 503, "Service Unavailable",
+  "{\"erro\":\"SD indisponivel\"}");
+return 503;
+}
+
+/* Primeira passada: conta quantas linhas do nó existem no CSV */
+fs_file_t_init(&arq);
+ret = fs_open(&arq, "/SD:/LEITURAS.CSV", FS_O_READ);
+if (ret < 0) {
+responder(sock, 500, "Internal Server Error",
+  "{\"erro\":\"falha ao abrir o CSV\"}");
+return 500;
+}
+
+for (;;) {
+ssize_t lidos = fs_read(&arq, linha + usado,
+sizeof(linha) - usado - 1);
+
+if (lidos <= 0) {
+break;
+}
+usado += lidos;
+linha[usado] = '\0';
+
+char *ini = linha;
+char *fim;
+
+while ((fim = strchr(ini, '\n')) != NULL) {
+*fim = '\0';
+char *c1 = strchr(ini, ',');
+char *c2 = c1 ? strchr(c1 + 1, ',') : NULL;
+
+if (c2 != NULL &&
+    (int)strtol(c2 + 1, NULL, 10) == node) {
+total++;
+}
+ini = fim + 1;
+}
+usado = strlen(ini);
+memmove(linha, ini, usado);
+}
+fs_close(&arq);
+
+if (total == 0) {
+responder(sock, 200, "OK", "[]");
+return 200;
+}
+
+/* Segunda passada: relê do início e monta o JSON das últimas N */
+escritas = total < n ? total : n;
+faltam = total - escritas;
+
+fs_file_t_init(&arq);
+ret = fs_open(&arq, "/SD:/LEITURAS.CSV", FS_O_READ);
+if (ret < 0) {
+responder(sock, 500, "Internal Server Error",
+  "{\"erro\":\"falha ao reabrir o CSV\"}");
+return 500;
+}
+
+usado = 0;
+pos += snprintf(corpo + pos, sizeof(corpo) - pos, "[");
+for (;;) {
+ssize_t lidos = fs_read(&arq, linha + usado,
+sizeof(linha) - usado - 1);
+
+if (lidos <= 0) {
+break;
+}
+usado += lidos;
+linha[usado] = '\0';
+
+char *ini = linha;
+char *fim;
+
+while ((fim = strchr(ini, '\n')) != NULL) {
+*fim = '\0';
+char *c1 = strchr(ini, ',');
+char *c2 = c1 ? strchr(c1 + 1, ',') : NULL;
+
+if (c2 != NULL &&
+    (int)strtol(c2 + 1, NULL, 10) == node) {
+if (faltam > 0) {
+faltam--;
+} else {
+/* Colunas: 0=data_hora, 1=recebido_ms,
+ * 2=node_id, 3=light, 4=temp_c,
+ * 5=accel_x, 6=accel_y, 7=accel_z,
+ * 8=last_seen_ms
+ */
+int id, light, ax, ay, az, last;
+char temp[16];
+
+if (sscanf(ini,
+   "%*[^,],%*[^,],%d,%d,%15[^,],"
+   "%d,%d,%d,%d",
+   &id, &light, temp,
+   &ax, &ay, &az, &last) == 7) {
+pos += snprintf(
+corpo + pos,
+sizeof(corpo) - pos,
+"%s{\"node_id\":%d,"
+"\"light\":%d,"
+"\"temp_c\":%s,"
+"\"accel\":[%d,%d,%d],"
+"\"last_seen_ms\":%d}",
+pos == 1 ? "" : ",",
+id, light, temp,
+ax, ay, az, last);
+}
+}
+}
+ini = fim + 1;
+}
+usado = strlen(ini);
+memmove(linha, ini, usado);
+}
+fs_close(&arq);
+
+pos += snprintf(corpo + pos, sizeof(corpo) - pos, "]");
+responder(sock, 200, "OK", corpo);
+return 200;
+}
+
 /* Retorna true se a requisição pediu para reiniciar a placa */
 static bool atender(int sock)
 {
@@ -143,6 +313,8 @@ static bool atender(int sock)
 		codigo = get_health(sock);
 	} else if (rota("GET", "/data")) {
 		codigo = get_data(sock);
+	} else if (rota("GET", "/log")) {
+		codigo = get_log(sock);
 	} else if (rota("POST", "/reset")) {
 		/* Responde antes: o supervisor precisa saber que o pedido chegou */
 		codigo = 200;
@@ -227,3 +399,4 @@ void api_http_iniciar(void)
 			servidor_http, NULL, NULL, NULL, PRIORIDADE, 0, K_NO_WAIT);
 	k_thread_name_set(&thread_http, "http");
 }
+

@@ -21,3 +21,11 @@ __pycache__/
 
 # docs
 /doc/_build*
+
+# Builds do Zephyr
+app/build/
+build-*/
+
+# Builds do Zephyr (não versionar)
+app/build/
+build-*/
