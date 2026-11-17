@@ -1,9 +1,11 @@
 #include "rede.h"
 
 #include <zephyr/net/net_if.h>
+#include <zephyr/net/net_ip.h>
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/net_event.h>
 #include <zephyr/sys/printk.h>
+#include <string.h>
 
 static struct net_mgmt_event_callback net_cb;
 static K_SEM_DEFINE(ip_pronto, 0, 1);
@@ -36,9 +38,28 @@ static void net_event_handler(struct net_mgmt_event_callback *cb,
 
 void rede_iniciar(void)
 {
+	struct net_if *iface = net_if_get_default();
+
+
 	net_mgmt_init_event_callback(&net_cb, net_event_handler,
 				     NET_EVENT_IPV4_ADDR_ADD);
 	net_mgmt_add_event_callback(&net_cb);
+
+	if (iface != NULL) {
+		int up_ret = net_if_up(iface);
+
+		/* Aplica o IP estatico (se configurado) a interface */
+		if (strlen(CONFIG_NET_CONFIG_MY_IPV4_ADDR) > 0) {
+			struct in_addr addr;
+			struct in_addr netmask;
+			struct net_if_addr *ifaddr;
+
+			net_addr_pton(AF_INET, CONFIG_NET_CONFIG_MY_IPV4_ADDR, &addr);
+			net_addr_pton(AF_INET, CONFIG_NET_CONFIG_MY_IPV4_NETMASK, &netmask);
+			ifaddr = net_if_ipv4_addr_add(iface, &addr, NET_ADDR_MANUAL, 0);
+			net_if_ipv4_set_netmask_by_addr(iface, &addr, &netmask);
+		}
+	}
 }
 
 int rede_aguardar_ip(k_timeout_t timeout)
