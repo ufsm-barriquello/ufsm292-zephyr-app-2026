@@ -1,5 +1,9 @@
 # Zephyr Example Application
 
+> **Projeto Final 2026/2 — Grupo D (Supervisor):** relatório em [RELATORIO.md](RELATORIO.md).
+> Licença: MIT para o código do grupo ([LICENSE](LICENSE)); arquivos herdados do template seguem
+> Apache-2.0 ([LICENSE-APACHE-2.0](LICENSE-APACHE-2.0)).
+
 <a href="https://github.com/zephyrproject-rtos/example-application/actions/workflows/build.yml?query=branch%3Amain">
   <img src="https://github.com/zephyrproject-rtos/example-application/actions/workflows/build.yml/badge.svg?event=push">
 </a>

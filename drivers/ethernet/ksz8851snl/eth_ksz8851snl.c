@@ -6,7 +6,7 @@
  * depois, e com o SDA ligado os registradores não respondem. Por isso todo
  * acesso ao SPI passa por `lock`.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #define DT_DRV_COMPAT microchip_ksz8851snl

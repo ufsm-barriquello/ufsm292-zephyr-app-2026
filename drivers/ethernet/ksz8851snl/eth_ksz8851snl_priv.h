@@ -2,7 +2,7 @@
  * Registradores do Microchip KSZ8851SNL (ATETHERNET1-XPRO), conferidos contra
  * o datasheet e contra o ks8851.h do Linux.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #ifndef ETH_KSZ8851SNL_PRIV_H_

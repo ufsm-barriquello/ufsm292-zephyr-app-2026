@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 menuconfig ETH_KSZ8851SNL
 	bool "Microchip KSZ8851SNL (Ethernet1 Xplained Pro)"

@@ -128,11 +128,11 @@ descarta quadro (`rx_err`, `rx_reject` e `spi_err` zerados).
 Para repetir: `cd sim && docker compose up -d`, e trocar os endereços em
 [prj.conf](prj.conf) pelo IP do PC.
 
-**Ainda não exercitado:** os serviços reais em `45.182.14.16:5500/5501`, que é
-o que o `prj.conf` versionado aponta. As tentativas anteriores esbarraram em
-bloqueio de rede, não na placa — o `last_result` dava `-116` (`ETIMEDOUT`) ou
-`-104` (`ECONNRESET`), nunca `-118` (`EHOSTUNREACH`), que é o retorno quando o
-endereço não resolve.
+**Integração com o gateway real:** testada junto com o grupo B (gateway),
+funcionando como esperado. Para isso, ajustar `CONFIG_SUPERVISOR_GATEWAY_ADDR`
+e `CONFIG_SUPERVISOR_GATEWAY_PORT` em [prj.conf](prj.conf) para o endereço do
+gateway. O `45.182.14.16` versionado no `prj.conf` foi só um endereço de teste
+de conexão.
 
 ## Depuração
 
