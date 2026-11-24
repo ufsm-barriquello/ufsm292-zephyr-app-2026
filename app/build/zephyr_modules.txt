@@ -1,5 +1,0 @@
-"ufsm292-zephyr-app-2026.git":"C:/zephyr-workspace/ufsm292-zephyr-app-2026.git":"C:/zephyr-workspace/ufsm292-zephyr-app-2026.git"
-"cmsis_6":"C:/zephyr-workspace/modules/hal/cmsis_6":"${ZEPHYR_CMSIS_6_CMAKE_DIR}"
-"atmel":"C:/zephyr-workspace/modules/hal/atmel":"C:/zephyr-workspace/modules/hal/atmel"
-"hal_nordic":"C:/zephyr-workspace/modules/hal/nordic":"${ZEPHYR_HAL_NORDIC_CMAKE_DIR}"
-"hal_stm32":"C:/zephyr-workspace/modules/hal/stm32":"C:/zephyr-workspace/modules/hal/stm32"

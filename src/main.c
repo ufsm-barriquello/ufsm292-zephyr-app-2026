@@ -1,37 +1,45 @@
 #include <zephyr/kernel.h>
-#include <zephyr/drivers/gpio.h>
 #include <zephyr/logging/log.h>
+#include "sensor_fetcher.h"
 
 LOG_MODULE_REGISTER(main, LOG_LEVEL_INF);
 
-/* Obtém a definição do LED 'led0' configurado no DTS da SAMD21 XPro (PB30) */
-static const struct gpio_dt_spec led = GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+/* Exemplo de payload vindo periodicamente da interface de rede/HTTP */
+static const char mock_gateway_response[] = 
+    "["
+    "  {\"node_id\": 1, \"light\": 300, \"tempc\": 25.39, \"accel\": [0.0, 0.0, 9.8], \"last_seen_ms\": 1000},"
+    "  {\"node_id\": 2, \"light\": 120, \"tempc\": 22.15, \"accel\": [0.0, -0.1, 9.7], \"last_seen_ms\": 2500}"
+    "]";
 
 int main(void)
 {
-    int ret;
-
-    LOG_INF("Iniciando a aplicacao Blink na SAMD21 XPro...");
-
-    if (!gpio_is_ready_dt(&led)) {
-        LOG_ERR("Dispositivo GPIO do LED nao esta pronto!");
-        return 0;
-    }
-
-    ret = gpio_pin_configure_dt(&led, GPIO_OUTPUT_ACTIVE);
-    if (ret < 0) {
-        LOG_ERR("Falha ao configurar o pino do LED (%d)", ret);
-        return 0;
-    }
-
-    LOG_INF("LED configurado com sucesso. Iniciando o loop de pisca...");
+    LOG_INF("Iniciando Datalogger SAMD21 (Modo Contínuo)...");
 
     while (1) {
-        ret = gpio_pin_toggle_dt(&led);
-        if (ret < 0) {
-            LOG_ERR("Falha ao alternar o estado do LED");
+        sensor_batch_t batch;
+        int ret = sensor_fetcher_parse_json(mock_gateway_response, &batch);
+
+        if (ret == 0) {
+            LOG_INF("--- Leitura Realizada (Nós: %zu) ---", batch.count);
+            for (size_t i = 0; i < batch.count; i++) {
+                float temp = batch.sensors[i].tempc;
+                int temp_int = (int)temp;
+                int temp_frac = (int)((temp - temp_int) * 100);
+                if (temp_frac < 0) temp_frac = -temp_frac;
+
+                LOG_INF("Node %d | Temp: %d.%02d C | Lux: %d | Last Seen: %u ms", 
+                        batch.sensors[i].node_id, 
+                        temp_int, 
+                        temp_frac, 
+                        batch.sensors[i].light,
+                        batch.sensors[i].last_seen_ms);
+            }
+        } else {
+            LOG_ERR("Falha ao processar payload: %d", ret);
         }
-        k_msleep(500); /* Aguarda 500ms (pisca a 1 Hz) */
+
+        /* Aguarda 5 segundos até a próxima requisição/leitura */
+        k_msleep(5000);
     }
 
     return 0;

@@ -1,6 +1,0 @@
-set(kconfig_env_dirs)
-list(APPEND kconfig_env_dirs ZEPHYR_UFSM292_ZEPHYR_APP_2026_GIT_MODULE_DIR=C:/zephyr-workspace/ufsm292-zephyr-app-2026.git)
-list(APPEND kconfig_env_dirs ZEPHYR_CMSIS_6_MODULE_DIR=C:/zephyr-workspace/modules/hal/cmsis_6)
-list(APPEND kconfig_env_dirs ZEPHYR_ATMEL_MODULE_DIR=C:/zephyr-workspace/modules/hal/atmel)
-list(APPEND kconfig_env_dirs ZEPHYR_HAL_NORDIC_MODULE_DIR=C:/zephyr-workspace/modules/hal/nordic)
-list(APPEND kconfig_env_dirs ZEPHYR_HAL_STM32_MODULE_DIR=C:/zephyr-workspace/modules/hal/stm32)
